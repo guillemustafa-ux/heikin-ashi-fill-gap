@@ -1,5 +1,5 @@
 //@version=6
-indicator("Heikin Ashi Fill Gap: What a Signal Loses at HA Prices", shorttitle = "HA-FILL-GAP", overlay = true, behind_chart = false)
+indicator("Heikin Ashi Fill Gap: What a Backtest Gains at HA Prices", shorttitle = "HA-FILL-GAP", overlay = true, behind_chart = false)
 
 // Heikin Ashi Fill Gap
 // 1) On a Heikin Ashi chart a strategy fills its orders at the synthetic HA prices unless its "Fill orders

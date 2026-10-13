@@ -1,4 +1,4 @@
-# Heikin Ashi Fill Gap: What a Signal Loses at HA Prices
+# Heikin Ashi Fill Gap: What a Backtest Gains at HA Prices
 
 Description to paste as is (between the rules):
 
