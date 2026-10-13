@@ -5,8 +5,8 @@ indicator("Heikin Ashi Fill Gap: What a Signal Loses at HA Prices", shorttitle =
 // 1) On a Heikin Ashi chart a strategy fills its orders at the synthetic HA prices unless its "Fill orders
 //    using standard OHLC" option is on. HA prices lag real prices in a trend, so the same signal reads
 //    better at HA fills than it would at real fills. This indicator runs on a standard chart and requests
-//    the Heikin Ashi open, high, low and close of the chart symbol with one request.security call, with
-//    the function's defaults gaps = barmerge.gaps_off and lookahead = barmerge.lookahead_off.
+//    the Heikin Ashi open and close of the chart symbol with one request.security call, with the
+//    function's defaults gaps = barmerge.gaps_off and lookahead = barmerge.lookahead_off.
 // 2) On every confirmed bar, measures the gap between the HA open and the real open, and between the HA
 //    close and the real close, in percent of the real price, and counts the bars where the HA open lies
 //    outside the bar's traded range: a fill at that HA open is at a price that never traded in the bar.
@@ -29,13 +29,15 @@ textSize = input.string("Small", "Table text size", options = ["Tiny", "Small", 
 bool standard = chart.is_standard
 bool longShort = sigMode == "Long and short"
 
-// The one request of the script, at global scope as Pine requires: the Heikin Ashi open, high, low and
-// close of the chart symbol on the chart timeframe, returned as a tuple. ticker.standard strips any
-// chart-type modifier from the ticker, so the call stays valid when the script is added to a non-standard
-// chart; on a standard chart it returns the ticker unchanged. gaps_off repeats the last value when the
-// requested series prints no bar, lookahead_off never returns a bar before it has closed; both are the
-// defaults, written out. haHigh and haLow come with the tuple; the measures use the HA open and close.
-[haOpen, haHigh, haLow, haClose] = request.security(ticker.heikinashi(ticker.standard(syminfo.tickerid)), timeframe.period, [open, high, low, close], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+// The one request of the script, at global scope as Pine requires: the Heikin Ashi open and close of the
+// chart symbol on the chart timeframe, returned as a tuple. On a standard chart the ticker id is used as
+// is, so the HA bars are built from the same real bars as the chart: it keeps the chart's extended
+// session, dividend adjustment and currency conversion, which ticker.standard would strip. On a
+// non-standard chart, where nothing is measured, ticker.standard strips the chart-type modifier so the
+// call stays valid. gaps_off repeats the last value when the requested series prints no bar,
+// lookahead_off never returns a bar before it has closed; both are the defaults, written out.
+string haBase = standard ? syminfo.tickerid : ticker.standard(syminfo.tickerid)
+[haOpen, haClose] = request.security(ticker.heikinashi(haBase), timeframe.period, [open, close], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
 
 // A bar is measured when the chart is standard and the request returned HA values for it. The HA close is
 // the mean of the bar's four real prices, so it always lies inside the traded range; only the HA open,
@@ -65,8 +67,9 @@ var int pendingSignal = 0
 var int pos = 0
 
 // Ledgers R (real fills) and H (HA fills) of the same trades: entry prices, closed trades, wins, sums of
-// per-trade returns in percent points, and the flattery (H return minus R return): its sum, the trades
-// where it is positive, and its extremes with the open time of the exit bar.
+// per-trade returns in percent points, and the flattery (H return minus R return): the trades where it is
+// positive and its extremes with the open time of the exit bar. Its total is sumRetH - sumRetR, taken in
+// the table.
 var float entryR = float(na)
 var float entryH = float(na)
 var int trades = 0
@@ -74,7 +77,6 @@ var int winsR = 0
 var int winsH = 0
 var float sumRetR = 0.0
 var float sumRetH = 0.0
-var float sumFlat = 0.0
 var int nFlatPos = 0
 var float maxFlat = float(na)
 var int maxFlatTime = int(na)
@@ -101,7 +103,6 @@ if barstate.isconfirmed and hasHa
                 winsH += 1
             sumRetR += retR
             sumRetH += retH
-            sumFlat += flat
             if flat > 0
                 nFlatPos += 1
             if na(maxFlat) or flat > maxFlat
@@ -200,7 +201,15 @@ if barstate.islast
         setCell(0, 0, "Use a standard chart", hdrBg, text.align_left)
     else
         string posTxt = pos == 0 ? "no open position" : (pos == 1 ? "long" : "short") + " open, not counted"
-        setCell(0, 0, syminfo.tickerid + " · " + timeframe.period + " · " + str.tostring(nBars, "#,##0") + " bars\n" + sigMode + " · " + str.tostring(trades, "#,##0") + " closed trades · " + posTxt, hdrBg, text.align_left)
+        // Totals at the two decimals the table shows, and the flattery total as their difference, so
+        // "Flattery total = HA fills total - Real fills total" holds on the printed figures: rounding the
+        // three sums on their own could leave them 0.01 apart.
+        float totR = math.round(sumRetR, 2)
+        float totH = math.round(sumRetH, 2)
+        float totFlat = math.round(totH - totR, 2)
+        // ticker.standard gives the plain "prefix:ticker" form; syminfo.tickerid can carry the session,
+        // adjustment and currency modifiers in an encoded form.
+        setCell(0, 0, ticker.standard(syminfo.tickerid) + " · " + timeframe.period + " · " + str.tostring(nBars, "#,##0") + " bars\n" + sigMode + " · " + str.tostring(trades, "#,##0") + " closed trades · " + posTxt, hdrBg, text.align_left)
         setCell(0, 1, "HA open vs real open", na, text.align_left)
         setCell(1, 1, "mean |gap| " + fmtPct(nBars > 0 ? sumAbsGapOpen / nBars : float(na)))
         setCell(2, 1, "max |gap| " + fmtPct(maxAbsGapOpen))
@@ -215,17 +224,17 @@ if barstate.islast
         setCell(2, 3, fmtRate(nOutside, nBars) + " of bars")
         setCell(3, 3, "")
         setCell(0, 4, "Real fills", na, text.align_left)
-        setCell(1, 4, "total " + fmtSigned(trades > 0 ? sumRetR : float(na)))
+        setCell(1, 4, "total " + fmtSigned(trades > 0 ? totR : float(na)))
         setCell(2, 4, "wins " + fmtRate(winsR, trades))
         setCell(3, 4, "")
         setCell(0, 5, "HA fills", na, text.align_left)
-        setCell(1, 5, "total " + fmtSigned(trades > 0 ? sumRetH : float(na)))
+        setCell(1, 5, "total " + fmtSigned(trades > 0 ? totH : float(na)))
         setCell(2, 5, "wins " + fmtRate(winsH, trades))
         setCell(3, 5, "")
         // Red when the HA fills read better than the real ones over the closed trades, green otherwise.
         setCell(0, 6, "Flattery · HA minus real", na, text.align_left)
-        setCell(1, 6, "total " + fmtSigned(trades > 0 ? sumFlat : float(na)), trades == 0 ? na : sumFlat > 0 ? badBg : goodBg)
-        setCell(2, 6, "mean " + fmtSigned(trades > 0 ? sumFlat / trades : float(na)) + " per trade")
+        setCell(1, 6, "total " + fmtSigned(trades > 0 ? totFlat : float(na)), trades == 0 ? na : totFlat > 0 ? badBg : goodBg)
+        setCell(2, 6, "mean " + fmtSigned(trades > 0 ? (sumRetH - sumRetR) / trades : float(na)) + " per trade")
         setCell(3, 6, "HA reads better " + fmtRate(nFlatPos, trades))
         setCell(0, 7, "Largest flattery", na, text.align_left)
         setCell(1, 7, "max " + fmtSigned(maxFlat) + " · " + fmtTime(maxFlatTime))

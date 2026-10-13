@@ -13,7 +13,8 @@ the previous bar's signal at this bar's open (ledger R at the real open, ledger 
 the gaps in percent of the real price, counts the bars where the HA open lies outside the traded range, and
 reads this bar's HA color flip (green = haClose > haOpen) as the signal for the next bar. Returns are
 direction * (exit / entry - 1) * 100 without commission or slippage; the flattery of a trade is its H return
-minus its R return.
+minus its R return. As in the Pine table, the two totals are rounded to the two decimals shown and the
+flattery total is their difference, so it equals HA total minus Real total on the printed figures.
 
 Printed for both signal modes: bars, mean and max |gap| for the open and the close, the outside-range share,
 closed trades, total return and win rate under real and HA fills, total and mean flattery and the share of
@@ -70,7 +71,7 @@ def simulate(bars, ha, long_short):
     prev_state = pending = pos = 0
     entry_r = entry_h = None
     trades = wins_r = wins_h = 0
-    sum_r = sum_h = sum_flat = 0.0
+    sum_r = sum_h = 0.0
     n_flat_pos = 0
     max_flat = min_flat = None
     max_flat_bar = min_flat_bar = None
@@ -86,7 +87,6 @@ def simulate(bars, ha, long_short):
                 wins_h += ret_h > 0
                 sum_r += ret_r
                 sum_h += ret_h
-                sum_flat += flat
                 n_flat_pos += flat > 0
                 if max_flat is None or flat > max_flat:
                     max_flat, max_flat_bar = flat, i
@@ -114,18 +114,22 @@ def simulate(bars, ha, long_short):
             pending = state
         prev_state = state
 
+    # Totals at the two decimals shown and the flattery total as their difference, as in the Pine table.
+    tot_r = round(sum_r, 2)
+    tot_h = round(sum_h, 2)
+    tot_flat = round(tot_h - tot_r, 2)
     print(f"{'Long and short' if long_short else 'Long only'}  ({n_bars} bars, {trades} closed trades, "
           f"{'long' if pos == 1 else 'short' if pos == -1 else 'no'} position open at the end, not counted)")
     print(f"  HA open vs real open    mean |gap| {sum_gap_o / n_bars:.2f}%   max |gap| {max_gap_o:.2f}% on bar {max_gap_o_bar}")
     print(f"  HA close vs real close  mean |gap| {sum_gap_c / n_bars:.2f}%   max |gap| {max_gap_c:.2f}% on bar {max_gap_c_bar}")
     print(f"  HA open outside range   {outside} bars   {100.0 * outside / n_bars:.1f}% of bars")
-    print(f"  Real fills              total {signed(sum_r)}   wins {100.0 * wins_r / trades:.1f}%")
-    print(f"  HA fills                total {signed(sum_h)}   wins {100.0 * wins_h / trades:.1f}%")
-    print(f"  Flattery                total {signed(sum_flat)}   mean {signed(sum_flat / trades)} per trade   "
+    print(f"  Real fills              total {signed(tot_r)}   wins {100.0 * wins_r / trades:.1f}%")
+    print(f"  HA fills                total {signed(tot_h)}   wins {100.0 * wins_h / trades:.1f}%")
+    print(f"  Flattery                total {signed(tot_flat)}   mean {signed((sum_h - sum_r) / trades)} per trade   "
           f"HA reads better {100.0 * n_flat_pos / trades:.1f}%")
     print(f"  Largest flattery        max {signed(max_flat)} on bar {max_flat_bar}   min {signed(min_flat)} on bar {min_flat_bar}")
     print()
-    return sum_flat
+    return tot_flat
 
 
 def main():

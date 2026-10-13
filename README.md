@@ -6,9 +6,9 @@ Published on TradingView: not yet. The script URL goes here after publishing.
 
 ## What it measures
 
-On a Heikin Ashi chart a strategy fills its orders at the chart's prices unless its "Fill orders using standard OHLC" option (`fill_orders_on_standard_ohlc` in `strategy()`) is on. The HA open is the midpoint of the previous HA bar and the HA close is the mean of the bar's real open, high, low and close, so in a trend both lag the real price: a long opened at an HA open buys below where the market was trading, a position closed at an HA open sells above it, and the same signal reads better than it would with real fills. The indicator runs on a standard chart and:
+On a Heikin Ashi chart a strategy fills its orders at the chart's prices unless its "Fill orders using standard OHLC" option (`fill_orders_on_standard_ohlc` in `strategy()`) is on. The HA open is the midpoint of the previous HA bar's open and close, and the HA close is the mean of the bar's real open, high, low and close, so in a trend both lag the real price: a long opened at an HA open buys below where the market was trading, a position closed at an HA open sells above it, and the same signal reads better than it would with real fills. The indicator runs on a standard chart and:
 
-1. **Requests the HA prices of the chart symbol.** One `request.security` call with `ticker.heikinashi(ticker.standard(syminfo.tickerid))`, the chart timeframe, the tuple `[open, high, low, close]`, `gaps = barmerge.gaps_off` and `lookahead = barmerge.lookahead_off`.
+1. **Requests the HA prices of the chart symbol.** One `request.security` call with `ticker.heikinashi(syminfo.tickerid)` on a standard chart, the chart timeframe, the tuple `[open, close]`, `gaps = barmerge.gaps_off` and `lookahead = barmerge.lookahead_off`. The chart's ticker id keeps its extended session, dividend adjustment and currency conversion, so the HA bars are built from the same real bars the chart shows.
 2. **Measures the gaps on every confirmed bar.** `gapOpenPct = (haOpen - open) / open * 100` and `gapClosePct = (haClose - close) / close * 100`; mean and maximum of |gap| with the bar of the maximum.
 3. **Counts the bars where the HA open is outside the traded range.** `haOpen < low or haOpen > high`: a fill at that HA open is at a price that never traded in the bar. The HA close is `(open + high + low + close) / 4` and always lies inside the range, so only the HA open can leave it.
 4. **Runs one signal under both fill prices.** The HA color flip (green = `haClose > haOpen`; a change of color on a confirmed bar is the signal, the fill is the next bar's open) feeds two ledgers of the same trades: R fills at the real `open` of the fill bar, H fills at the HA open of the same bar. Per closed trade, return = direction × (exit / entry − 1) × 100 and flattery = H return − R return.
@@ -30,9 +30,8 @@ Consequences:
 - The realtime bar is never in the counts until it confirms. The table is drawn on the last bar on every tick, the counters are not. A trade is recorded on the confirmation of its fill bar, one bar after the flip.
 - A position still open on the last bar is not counted; the header says so.
 - No commission or slippage in either ledger: the measure is the fill price alone.
-- On a non-standard chart (Heikin Ashi, Renko, Kagi, Line break, Point & figure, Range) the table shows "Use a standard chart" and nothing is counted or shaded. The request still runs, as Pine requires `request.security` at global scope; `ticker.standard` strips the chart-type modifier from the ticker so the call stays valid there, and on a standard chart it returns the ticker unchanged.
+- On a non-standard chart (Heikin Ashi, Renko, Kagi, Line break, Point & figure, Range) the table shows "Use a standard chart" and nothing is counted or shaded. The request still runs, as Pine requires `request.security` at global scope; there the ticker goes through `ticker.standard` first, which strips the chart-type modifier so the call stays valid. On a standard chart the ticker id is used as is: `ticker.standard` also strips the extended session, dividend adjustment and currency conversion, and the HA bars would then come from other real bars than the chart's.
 - No other `request.*` call, no look-ahead, no recalculation of a count after its bar has closed. The shading of outside-range bars is drawn on every bar, including the realtime one, whose high and low are still forming: a tint there can disappear as the bar's range widens.
-- `haHigh` and `haLow` come back with the tuple and are not used by the measures.
 
 ## Settings
 
@@ -53,7 +52,7 @@ Consequences:
 | HA open outside the traded range | Bars and their share of the bars counted. Red when there is at least one, green when there is none and at least one bar was counted. |
 | Real fills | Total return (simple sum of per-trade returns, in percent points) and win rate of the trades filled at the real open. |
 | HA fills | The same trades, filled at the HA open. |
-| Flattery · HA minus real | Sum of per-trade flattery (equals HA total minus Real total), mean per trade, and share of trades where the HA fill reads better. Red when the total is positive, green otherwise. |
+| Flattery · HA minus real | Total: HA fills total minus Real fills total, taken from the two totals as shown, so the identity holds on the printed figures (it is the sum of per-trade flattery up to that rounding). Mean per trade, and share of trades where the HA fill reads better. Red when the total is positive, green otherwise. |
 | Largest flattery | Largest and most negative flattery, each with its exit bar. |
 | Last confirmed bar | Real open and HA open at the symbol's precision, and the gap in percent, for a hand check against the HA chart. |
 
@@ -84,7 +83,7 @@ Long only  (2000 bars, 230 closed trades, no position open at the end, not count
   HA open outside range   1120 bars   56.0% of bars
   Real fills              total +37.15%   wins 41.3%
   HA fills                total +175.43%   wins 68.7%
-  Flattery                total +138.29%   mean +0.60% per trade   HA reads better 95.2%
+  Flattery                total +138.28%   mean +0.60% per trade   HA reads better 95.2%
   Largest flattery        max +2.49% on bar 1974   min -0.24% on bar 5
 
 Long and short  (2000 bars, 459 closed trades, short position open at the end, not counted)
@@ -93,10 +92,10 @@ Long and short  (2000 bars, 459 closed trades, short position open at the end, n
   HA open outside range   1120 bars   56.0% of bars
   Real fills              total +23.10%   wins 37.0%
   HA fills                total +298.95%   wins 65.6%
-  Flattery                total +275.84%   mean +0.60% per trade   HA reads better 96.1%
+  Flattery                total +275.85%   mean +0.60% per trade   HA reads better 96.1%
   Largest flattery        max +2.49% on bar 1974   min -0.45% on bar 1957
 
-Expected sign: in a trending series HA fills flatter the signal, so the flattery total is positive. Observed: +138.29% long only, +275.84% long and short.
+Expected sign: in a trending series HA fills flatter the signal, so the flattery total is positive. Observed: +138.28% long only, +275.85% long and short.
 ```
 
 Result on TradingView: not yet compiled. Record the compiled result here after step 1, as the table reads it.
@@ -118,7 +117,9 @@ What the Pine Script v6 reference says about the built-ins the script relies on,
 - `chart.is_standard` (simple bool): "Returns true if the chart type is not one of the following: Renko, Kagi, Line break, Point & figure, Range, Heikin Ashi; false otherwise." This is the test the script uses.
 - `chart.is_heikinashi` (simple bool): "Returns true if the chart type is Heikin Ashi, false otherwise." Not used: `chart.is_standard` covers Heikin Ashi and the other synthetic types in one test.
 - `ticker.heikinashi(symbol) → simple string` (also a series overload): "Creates a ticker identifier for requesting Heikin Ashi bar values." The argument is a symbol ticker identifier; the return value is a ticker id "that can be supplied to request.security()". The reference example is `request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close)`.
-- `ticker.standard(symbol) → simple string` (also a series overload): returns "a string representing the ticker of a standard chart in the 'prefix:ticker' format"; the argument defaults to `syminfo.tickerid`, and an argument without prefix and ticker information is returned as is. The reference example requests "data from the standard chart type, regardless of the chart type the script is running on".
+- `ticker.standard(symbol) → simple string` (also a series overload): returns "a string representing the ticker of a standard chart in the 'prefix:ticker' format"; the argument defaults to `syminfo.tickerid`, and an argument without prefix and ticker information is returned as is. The reference example requests "data from the standard chart type, regardless of the chart type the script is running on". The description adds that the ticker it creates is "unaffected by modifiers like extended session, dividend adjustment, currency conversion, and the calculations of non-standard chart types", so the script applies it only off the standard chart, where nothing is measured, and in the table header.
+- `syminfo.tickerid` (simple string): the value "can also include information about data modifications such as dividend adjustment, non-standard chart type, currency conversion, etc.", and the remarks recommend running it through `ticker.standard()` for a consistent "prefix:ticker" form. The header shows it that way.
+- `math.round(number, precision)` (float overloads): rounds to the given number of decimals. The table rounds the two ledger totals to two decimals and takes the flattery total as their difference.
 - `request.security(symbol, timeframe, expression, gaps, lookahead, ignore_invalid_symbol, currency, calc_bars_count) → series <type>`: the `expression` can be "a variable, function, object, array, matrix, or map of series int/float/bool/string/color/enum, or a tuple of these", and the function returns "a result determined by `expression`". The reference example `[open1D, high1D, low1D, close1D, ema1D] = request.security(syminfo.tickerid, "1D", [open, high, low, close, ta.ema(close, 10)])` is the form the script uses. The reference also notes the limit of 40 unique `request.*()` calls per script.
 - `strategy()` parameter `fill_orders_on_standard_ohlc` (const bool): "When true, forces strategies running on Heikin Ashi charts to fill orders using actual OHLC prices, for more realistic results. Optional. The default is false." The remarks of `strategy()` add that strategies "always use the chart's prices to enter and exit positions" and that using them on non-standard chart types "will produce misleading results, as their prices are synthetic". The parameter is named in the description only; the indicator does not use it.
 
