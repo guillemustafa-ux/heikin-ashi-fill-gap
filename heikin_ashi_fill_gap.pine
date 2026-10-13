@@ -1,0 +1,245 @@
+//@version=6
+indicator("Heikin Ashi Fill Gap: What a Signal Loses at HA Prices", shorttitle = "HA-FILL-GAP", overlay = true, behind_chart = false)
+
+// Heikin Ashi Fill Gap
+// 1) On a Heikin Ashi chart a strategy fills its orders at the synthetic HA prices unless its "Fill orders
+//    using standard OHLC" option is on. HA prices lag real prices in a trend, so the same signal reads
+//    better at HA fills than it would at real fills. This indicator runs on a standard chart and requests
+//    the Heikin Ashi open, high, low and close of the chart symbol with one request.security call, with
+//    the function's defaults gaps = barmerge.gaps_off and lookahead = barmerge.lookahead_off.
+// 2) On every confirmed bar, measures the gap between the HA open and the real open, and between the HA
+//    close and the real close, in percent of the real price, and counts the bars where the HA open lies
+//    outside the bar's traded range: a fill at that HA open is at a price that never traded in the bar.
+// 3) Runs the HA color flip as a signal (green = HA close above HA open; the flip is the signal, the fill
+//    is the next bar's open) and keeps two ledgers of the same trades that differ only in the fill price:
+//    R fills at the real open, H fills at the HA open. The flattery of a trade is its H return minus its
+//    R return. Totals, win rates, mean and largest flattery go in a table.
+// The result is a table of counts for this symbol on this chart, not a rule.
+
+// ───────────────────────── Inputs ─────────────────────────
+sigMode = input.string("Long only", "Signal", options = ["Long only", "Long and short"], group = "Signal", tooltip = "Heikin Ashi color flip, filled at the next bar's open. Long only: a flip to green opens a long, a flip to red closes it. Long and short: a flip to green closes any short and opens a long, a flip to red closes any long and opens a short.")
+
+shade = input.bool(true, "Shade bars where the HA open is outside the traded range", group = "Display", tooltip = "Red tint: on this bar the Heikin Ashi open is below the low or above the high, so a fill at the HA open is at a price that never traded in the bar. Drawn on every bar, including the realtime one.")
+tablePos = input.string("Bottom right", "Table position", options = ["Top right", "Bottom right", "Top left", "Bottom left"], group = "Display")
+textSize = input.string("Small", "Table text size", options = ["Tiny", "Small", "Normal"], group = "Display")
+
+// ───────────────────────── Data ─────────────────────────
+// Only a standard chart has real prices to compare against. On Heikin Ashi, Renko, Kagi and the other
+// synthetic types the table says so and nothing is counted.
+bool standard = chart.is_standard
+bool longShort = sigMode == "Long and short"
+
+// The one request of the script, at global scope as Pine requires: the Heikin Ashi open, high, low and
+// close of the chart symbol on the chart timeframe, returned as a tuple. ticker.standard strips any
+// chart-type modifier from the ticker, so the call stays valid when the script is added to a non-standard
+// chart; on a standard chart it returns the ticker unchanged. gaps_off repeats the last value when the
+// requested series prints no bar, lookahead_off never returns a bar before it has closed; both are the
+// defaults, written out. haHigh and haLow come with the tuple; the measures use the HA open and close.
+[haOpen, haHigh, haLow, haClose] = request.security(ticker.heikinashi(ticker.standard(syminfo.tickerid)), timeframe.period, [open, high, low, close], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+
+// A bar is measured when the chart is standard and the request returned HA values for it. The HA close is
+// the mean of the bar's four real prices, so it always lies inside the traded range; only the HA open,
+// which is built from the previous HA bar, can leave it.
+bool hasHa = standard and not na(haOpen) and not na(haClose)
+bool outside = hasHa and (haOpen < low or haOpen > high)
+
+// ───────────────────────── Ledger state ─────────────────────────
+// Gap measures: bars measured, the sums behind the means, the maxima with the open time of the bar where
+// they were measured, the bars with the HA open outside the traded range, and the last confirmed bar.
+var int nBars = 0
+var float sumAbsGapOpen = 0.0
+var float maxAbsGapOpen = float(na)
+var int maxAbsGapOpenTime = int(na)
+var float sumAbsGapClose = 0.0
+var float maxAbsGapClose = float(na)
+var int maxAbsGapCloseTime = int(na)
+var int nOutside = 0
+var float lastOpen = float(na)
+var float lastHaOpen = float(na)
+var float lastGapOpenPct = float(na)
+
+// Signal: the HA color of the previous confirmed bar (1 green, -1 not green, 0 none yet), the flip waiting
+// for its fill on the next bar (1 to green, -1 to red, 0 none) and the position (1 long, -1 short, 0 flat).
+var int prevState = 0
+var int pendingSignal = 0
+var int pos = 0
+
+// Ledgers R (real fills) and H (HA fills) of the same trades: entry prices, closed trades, wins, sums of
+// per-trade returns in percent points, and the flattery (H return minus R return): its sum, the trades
+// where it is positive, and its extremes with the open time of the exit bar.
+var float entryR = float(na)
+var float entryH = float(na)
+var int trades = 0
+var int winsR = 0
+var int winsH = 0
+var float sumRetR = 0.0
+var float sumRetH = 0.0
+var float sumFlat = 0.0
+var int nFlatPos = 0
+var float maxFlat = float(na)
+var int maxFlatTime = int(na)
+var float minFlat = float(na)
+var int minFlatTime = int(na)
+
+// ───────────────────────── Ledger update ─────────────────────────
+// Only confirmed bars with HA values update the ledgers, so a realtime bar never counts twice and no count
+// changes after a bar has closed. Order within a bar: the fill of the previous bar's signal first, then the
+// gap measures, then this bar's flip, which waits for the next bar.
+if barstate.isconfirmed and hasHa
+    // Fill of the pending signal at this bar's open: real open for R, HA open for H. A position against the
+    // signal closes first; then a position opens in the signal's direction, longs always, shorts only in
+    // "Long and short". Returns are direction * (exit / entry - 1) * 100, without commission or slippage.
+    if pendingSignal != 0
+        if pos != 0 and pos != pendingSignal
+            float retR = pos * (open / entryR - 1) * 100
+            float retH = pos * (haOpen / entryH - 1) * 100
+            float flat = retH - retR
+            trades += 1
+            if retR > 0
+                winsR += 1
+            if retH > 0
+                winsH += 1
+            sumRetR += retR
+            sumRetH += retH
+            sumFlat += flat
+            if flat > 0
+                nFlatPos += 1
+            if na(maxFlat) or flat > maxFlat
+                maxFlat := flat
+                maxFlatTime := time
+            if na(minFlat) or flat < minFlat
+                minFlat := flat
+                minFlatTime := time
+            pos := 0
+        if pos == 0 and (pendingSignal == 1 or longShort)
+            pos := pendingSignal
+            entryR := open
+            entryH := haOpen
+        pendingSignal := 0
+
+    // Gaps in percent of the real price, kept as absolute values for the mean and the maximum.
+    float gapOpenPct = (haOpen - open) / open * 100
+    float gapClosePct = (haClose - close) / close * 100
+    nBars += 1
+    sumAbsGapOpen += math.abs(gapOpenPct)
+    if na(maxAbsGapOpen) or math.abs(gapOpenPct) > maxAbsGapOpen
+        maxAbsGapOpen := math.abs(gapOpenPct)
+        maxAbsGapOpenTime := time
+    sumAbsGapClose += math.abs(gapClosePct)
+    if na(maxAbsGapClose) or math.abs(gapClosePct) > maxAbsGapClose
+        maxAbsGapClose := math.abs(gapClosePct)
+        maxAbsGapCloseTime := time
+    if outside
+        nOutside += 1
+    lastOpen := open
+    lastHaOpen := haOpen
+    lastGapOpenPct := gapOpenPct
+
+    // The flip: this bar's HA color against the previous confirmed bar's. The first measured bar has no
+    // previous color and gives no signal.
+    int state = haClose > haOpen ? 1 : -1
+    if prevState != 0 and state != prevState
+        pendingSignal := state
+    prevState := state
+
+// ───────────────────────── Shading ─────────────────────────
+// Drawn on every bar, including the realtime bar, whose high and low are still forming: a tint there can
+// go away as the bar's range widens. The count above is the confirmed-bar record.
+bgcolor(shade and outside ? color.new(color.red, 85) : na, title = "HA open outside the traded range")
+
+// ───────────────────────── Table ─────────────────────────
+tPos = switch tablePos
+    "Top right" => position.top_right
+    "Bottom right" => position.bottom_right
+    "Top left" => position.top_left
+    => position.bottom_left
+
+tSize = switch textSize
+    "Tiny" => size.tiny
+    "Normal" => size.normal
+    => size.small
+
+// Four columns: the measure names and up to three values. Ten rows: header, eight measures, footer.
+var table tbl = table.new(tPos, 4, 10, border_width = 1)
+
+// Opaque cell colors blended from the chart background, so candles do not show through the table
+// on a light or a dark theme.
+cellBg = color.from_gradient(0.12, 0.0, 1.0, chart.bg_color, color.gray)
+hdrBg = color.from_gradient(0.30, 0.0, 1.0, chart.bg_color, color.gray)
+badBg = color.from_gradient(0.40, 0.0, 1.0, chart.bg_color, color.red)
+goodBg = color.from_gradient(0.40, 0.0, 1.0, chart.bg_color, color.green)
+
+setCell(int col, int row, string txt, color bg = na, string align = text.align_center) =>
+    table.cell(tbl, col, row, txt, text_color = chart.fg_color, text_size = tSize, text_halign = align, bgcolor = na(bg) ? cellBg : bg)
+
+// "0.12%" from a percentage, "n/a" when there is none.
+fmtPct(float v) =>
+    na(v) ? "n/a" : str.tostring(v, "0.00") + "%"
+
+// "+0.12%" or "-0.12%" from a signed percentage, "n/a" when there is none.
+fmtSigned(float v) =>
+    na(v) ? "n/a" : (v > 0 ? "+" : "") + str.tostring(v, "0.00") + "%"
+
+// "45.2%" from a count and a total, "n/a" when the total is zero.
+fmtRate(int n, int total) =>
+    total > 0 ? str.tostring(float(n) / total * 100.0, "0.0") + "%" : "n/a"
+
+// A price at the symbol's precision, "n/a" when there is none.
+fmtPrice(float p) =>
+    na(p) ? "n/a" : str.tostring(p, format.mintick)
+
+// The bar's open time in the chart symbol's exchange time, "n/a" when there is none.
+fmtTime(int t) =>
+    na(t) ? "n/a" : str.format_time(t, "yyyy-MM-dd HH:mm", syminfo.timezone)
+
+// Merged rows are merged once: merging cells that are already merged on every realtime tick is avoided.
+var bool merged = false
+
+if barstate.islast
+    if not standard
+        setCell(0, 0, "Use a standard chart", hdrBg, text.align_left)
+    else
+        string posTxt = pos == 0 ? "no open position" : (pos == 1 ? "long" : "short") + " open, not counted"
+        setCell(0, 0, syminfo.tickerid + " · " + timeframe.period + " · " + str.tostring(nBars, "#,##0") + " bars\n" + sigMode + " · " + str.tostring(trades, "#,##0") + " closed trades · " + posTxt, hdrBg, text.align_left)
+        setCell(0, 1, "HA open vs real open", na, text.align_left)
+        setCell(1, 1, "mean |gap| " + fmtPct(nBars > 0 ? sumAbsGapOpen / nBars : float(na)))
+        setCell(2, 1, "max |gap| " + fmtPct(maxAbsGapOpen))
+        setCell(3, 1, "bar " + fmtTime(maxAbsGapOpenTime))
+        setCell(0, 2, "HA close vs real close", na, text.align_left)
+        setCell(1, 2, "mean |gap| " + fmtPct(nBars > 0 ? sumAbsGapClose / nBars : float(na)))
+        setCell(2, 2, "max |gap| " + fmtPct(maxAbsGapClose))
+        setCell(3, 2, "bar " + fmtTime(maxAbsGapCloseTime))
+        // Red as soon as one HA open left the traded range. Green only once there is a bar to judge.
+        setCell(0, 3, "HA open outside the traded range", na, text.align_left)
+        setCell(1, 3, str.tostring(nOutside, "#,##0") + " bars", nOutside > 0 ? badBg : nBars > 0 ? goodBg : na)
+        setCell(2, 3, fmtRate(nOutside, nBars) + " of bars")
+        setCell(3, 3, "")
+        setCell(0, 4, "Real fills", na, text.align_left)
+        setCell(1, 4, "total " + fmtSigned(trades > 0 ? sumRetR : float(na)))
+        setCell(2, 4, "wins " + fmtRate(winsR, trades))
+        setCell(3, 4, "")
+        setCell(0, 5, "HA fills", na, text.align_left)
+        setCell(1, 5, "total " + fmtSigned(trades > 0 ? sumRetH : float(na)))
+        setCell(2, 5, "wins " + fmtRate(winsH, trades))
+        setCell(3, 5, "")
+        // Red when the HA fills read better than the real ones over the closed trades, green otherwise.
+        setCell(0, 6, "Flattery · HA minus real", na, text.align_left)
+        setCell(1, 6, "total " + fmtSigned(trades > 0 ? sumFlat : float(na)), trades == 0 ? na : sumFlat > 0 ? badBg : goodBg)
+        setCell(2, 6, "mean " + fmtSigned(trades > 0 ? sumFlat / trades : float(na)) + " per trade")
+        setCell(3, 6, "HA reads better " + fmtRate(nFlatPos, trades))
+        setCell(0, 7, "Largest flattery", na, text.align_left)
+        setCell(1, 7, "max " + fmtSigned(maxFlat) + " · " + fmtTime(maxFlatTime))
+        setCell(2, 7, "min " + fmtSigned(minFlat) + " · " + fmtTime(minFlatTime))
+        setCell(3, 7, "")
+        setCell(0, 8, "Last confirmed bar", na, text.align_left)
+        setCell(1, 8, "real open " + fmtPrice(lastOpen))
+        setCell(2, 8, "HA open " + fmtPrice(lastHaOpen))
+        setCell(3, 8, "gap " + fmtSigned(lastGapOpenPct))
+        setCell(0, 9, "Counts on confirmed bars. Not advice. Dates in the chart symbol's exchange time · " + syminfo.timezone, hdrBg, text.align_left)
+        for c = 1 to 3
+            setCell(c, 0, "", hdrBg)
+            setCell(c, 9, "", hdrBg)
+        if not merged
+            table.merge_cells(tbl, 0, 0, 3, 0)
+            table.merge_cells(tbl, 0, 9, 3, 9)
+            merged := true
