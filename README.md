@@ -2,7 +2,7 @@
 
 Open-source TradingView indicator (Pine Script v6) that measures, on a standard chart, how far the Heikin Ashi prices of the chart symbol sit from its real prices on every confirmed bar, how often the HA open falls outside the bar's traded range, and how much better the same signal reads when its orders fill at HA prices instead of real ones.
 
-Published on TradingView: not yet. The script URL goes here after publishing.
+Published on TradingView: https://www.tradingview.com/script/oTHxF7ou-Heikin-Ashi-Fill-Gap-What-a-Backtest-Gains-at-HA-Prices/
 
 ## What it measures
 
@@ -98,7 +98,23 @@ Long and short  (2000 bars, 459 closed trades, short position open at the end, n
 Expected sign: in a trending series HA fills flatter the signal, so the flattery total is positive. Observed: +138.28% long only, +275.85% long and short.
 ```
 
-Result on TradingView: not yet compiled. Record the compiled result here after step 1, as the table reads it.
+Result on TradingView, 2026-10-13, BINANCE:BTCUSDT 1 hour, standard candles, default settings (Long only): the script compiled without errors or warnings and counted 24,406 confirmed bars from 2024-01-01, 3,100 closed trades, one long open and not counted.
+
+| Measure | Value |
+|---|---|
+| HA open vs real open | mean abs gap 0.27%, max 4.70% on the chart bar of 2024-04-13 21:00 UTC |
+| HA close vs real close | mean abs gap 0.17%, max 2.72% on 2025-03-07 00:00 UTC |
+| HA open outside the traded range | 10,894 bars, 44.6% |
+| Real fills | total +18.22%, wins 34.7% |
+| HA fills | total +1490.65%, wins 66.6% |
+| Flattery, HA minus real | total +1472.43%, mean +0.47% per trade, HA reads better in 94.7% of trades |
+| Largest flattery | max +5.44% on 2024-08-05 19:00 UTC, min -1.06% on 2024-03-06 16:00 UTC |
+| Last confirmed bar | real open 83415.32, HA open 83286.66, gap -0.15% |
+
+- Identity: 1490.65 - 18.22 = 1472.43, and 1472.43 / 3,100 = 0.47 per trade.
+- Hand check: with the chart switched to Heikin Ashi, the bar of 2026-10-13 21:00 UTC showed open 83286.66, the HA open in the last row; the table then showed only "Use a standard chart" and no bar was shaded.
+- Compared with the simulation (mean abs gap 0.34%, 56.0% outside the range, HA reads better in 95.2%): same sign and order; BTCUSDT has a smaller gap and fewer outside-range bars than the synthetic series.
+- The Bar Replay check was not run.
 
 ## Limitations
 
